@@ -1,0 +1,8 @@
+usage: evaluate.py [-h] [--ground-truth GROUND_TRUTH]
+                   [--predictions PREDICTIONS] [--empty-labels EMPTY_LABELS]
+
+options:
+  -h, --help            show this help message and exit
+  --ground-truth GROUND_TRUTH
+  --predictions PREDICTIONS
+  --empty-labels EMPTY_LABELS

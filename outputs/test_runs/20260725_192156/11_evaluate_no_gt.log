@@ -1,0 +1,2 @@
+Konum de�erlendirmesi i�in --ground-truth sa�lay�n.
+Ger�ek empty_shelf ground-truth etiketleri bulunmad��� i�in detection metrikleri hesaplanmad�.

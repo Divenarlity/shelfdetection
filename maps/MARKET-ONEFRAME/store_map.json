@@ -1,0 +1,10 @@
+{
+  "schema_version": 3,
+  "store_id": "MARKET-ONEFRAME",
+  "map_uuid": "3feb36af-e440-4d4f-8286-22f9059ca044",
+  "coordinate_frame": "map",
+  "id_prefix": "SHELF",
+  "next_shelf_index": 1,
+  "retired_shelf_ids": [],
+  "shelves": []
+}

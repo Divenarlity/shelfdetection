@@ -1,0 +1,13 @@
+usage: main.py [-h] (--source SOURCE | --manifest MANIFEST)
+               [--camera-id CAMERA_ID] [--store-map STORE_MAP]
+               [--config CONFIG] [--save-annotated] [--output OUTPUT]
+
+options:
+  -h, --help            show this help message and exit
+  --source SOURCE
+  --manifest MANIFEST
+  --camera-id CAMERA_ID
+  --store-map STORE_MAP
+  --config CONFIG
+  --save-annotated
+  --output OUTPUT

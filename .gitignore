@@ -1,0 +1,37 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Unity generated
+Library/
+Temp/
+Logs/
+obj/
+Build/
+Builds/
+UserSettings/
+MemoryCaptures/
+
+# IDE
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model weights
+*.pt
+
+# Python cache / outputs
+runs/
+
+# Large local datasets
+test_data/archive.zip
+test_data/archive/

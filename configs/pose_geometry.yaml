@@ -1,0 +1,13 @@
+min_visible_area: 200
+min_front_dot: 0.05
+min_score: 0.25
+min_pose_quality: 0.70
+weights:
+  iou: 0.25
+  mask_coverage: 0.18
+  polygon_coverage: 0.12
+  centroid_score: 0.15
+  area_score: 0.10
+  segmentation_confidence: 0.05
+  distance_score: 0.05
+  front_facing_score: 0.10

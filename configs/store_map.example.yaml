@@ -1,0 +1,17 @@
+market_id: DEMO-MARKET-01
+section_names: [left, middle, right]
+cameras:
+  CAM-01:
+    area_id: A
+    reference_width: 1920
+    reference_height: 1080
+    shelves:
+      - shelf_id: A-R01-L01
+        rack_id: A-R01
+        level: 1
+        polygon: [[120, 140], [920, 130], [930, 260], [110, 270]]
+      - shelf_id: A-R01-L02
+        rack_id: A-R01
+        level: 2
+        polygon: [[110, 275], [930, 265], [940, 410], [100, 420]]
+

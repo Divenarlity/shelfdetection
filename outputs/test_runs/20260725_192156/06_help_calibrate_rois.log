@@ -1,0 +1,13 @@
+usage: calibrate_rois.py [-h] --image IMAGE --camera-id CAMERA_ID
+                         [--market-id MARKET_ID] [--area-id AREA_ID]
+                         [--output OUTPUT]
+
+D�rt noktal� raf ROI kalibrasyonu
+
+options:
+  -h, --help            show this help message and exit
+  --image IMAGE
+  --camera-id CAMERA_ID
+  --market-id MARKET_ID
+  --area-id AREA_ID
+  --output OUTPUT
