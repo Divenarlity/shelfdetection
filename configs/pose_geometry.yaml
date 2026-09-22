@@ -2,6 +2,7 @@ min_visible_area: 200
 min_front_dot: 0.05
 min_score: 0.25
 min_pose_quality: 0.70
+min_mask_polygon_overlap: 0.05
 weights:
   iou: 0.25
   mask_coverage: 0.18

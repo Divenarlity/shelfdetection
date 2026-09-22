@@ -31,7 +31,11 @@ Thumbs.db
 
 # Python cache / outputs
 runs/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Large local datasets
+# Optional local datasets (the small tests/data regression fixture is tracked)
+datasets/
 test_data/archive.zip
 test_data/archive/

@@ -1,6 +1,0 @@
-usage: inspect_models.py [-h] [--root ROOT] [--output OUTPUT]
-
-options:
-  -h, --help       show this help message and exit
-  --root ROOT
-  --output OUTPUT

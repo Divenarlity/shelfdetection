@@ -1,0 +1,60 @@
+{
+  "schema_version": 3,
+  "store_id": "MARKET-001",
+  "session_id": "exact_live_replay",
+  "frame_id": "frame_102198_fixed",
+  "image_path": "frame_102198.jpg",
+  "pixel_origin": "top_left",
+  "timestamp": 0,
+  "image": {
+    "width": 1280,
+    "height": 720
+  },
+  "camera": {
+    "position_map": [
+      -1.7,
+      1.1,
+      2.58
+    ],
+    "rotation_xyzw": [
+      0,
+      -0.7071067811865476,
+      0,
+      0.7071067811865476
+    ],
+    "quaternion_order": "xyzw",
+    "intrinsics": {
+      "fx": 469.16113422283405,
+      "fy": 469.16113422283405,
+      "cx": 640,
+      "cy": 360
+    }
+  },
+  "pose": {
+    "source": "unity_camera_pose",
+    "quality": 1,
+    "relocalized": true,
+    "scale_initialized": true
+  },
+  "resolution": [
+    1280,
+    720
+  ],
+  "camera_position_world": [
+    -1.7,
+    1.1,
+    2.58
+  ],
+  "camera_rotation_xyzw": [
+    0,
+    -0.7071067811865476,
+    0,
+    0.7071067811865476
+  ],
+  "intrinsics": {
+    "fx": 469.16113422283405,
+    "fy": 469.16113422283405,
+    "cx": 640,
+    "cy": 360
+  }
+}

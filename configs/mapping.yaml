@@ -1,7 +1,0 @@
-min_pose_quality: 0.70
-min_observations: 5
-target_observations: 20
-min_baseline_m: 0.30
-association_distance_m: 0.60
-duplicate_distance_m: 0.25
-min_normal_dot: 0.90

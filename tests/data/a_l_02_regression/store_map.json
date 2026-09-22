@@ -1,0 +1,126 @@
+{
+  "schema_version": 2,
+  "coordinate_system": "unity_world",
+  "shelves": [
+    {
+      "shelf_id": "A-L-01",
+      "parent_surface_id": "Rack_A_L_01",
+      "corners_world": [
+        [-3.67999983, 0, -3.6],
+        [-3.67999983, 2.2, -3.6],
+        [-3.68, 2.2, -1.39999986],
+        [-3.68, 0, -1.39999986]
+      ],
+      "center_world": [-3.68, 1.1, -2.49999976],
+      "front_normal_world": [1, 0, 1.08372078E-07],
+      "width_m": 2.2,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "A-L-02",
+      "parent_surface_id": "Rack_B_L_02",
+      "corners_world": [
+        [-3.71, 0, 1.4],
+        [-3.71, 2.2, 1.4],
+        [-3.71000028, 2.2, 3.60000014],
+        [-3.71000028, 0, 3.60000014]
+      ],
+      "center_world": [-3.71, 1.1, 2.5],
+      "front_normal_world": [1, 0, 1.0837207E-07],
+      "width_m": 2.20000029,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "A-R-01",
+      "parent_surface_id": "Rack_A_R_01",
+      "corners_world": [
+        [-0.819999933, 0, -1.39999986],
+        [-0.819999933, 2.2, -1.39999986],
+        [-0.8200002, 2.2, -3.6],
+        [-0.8200002, 0, -3.6]
+      ],
+      "center_world": [-0.820000052, 1.1, -2.5],
+      "front_normal_world": [-1, 0, 1.08372078E-07],
+      "width_m": 2.2,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "A-R-02",
+      "parent_surface_id": "Rack_A_R_02",
+      "corners_world": [
+        [-0.819999933, 0, 3.60000014],
+        [-0.819999933, 2.2, 3.60000014],
+        [-0.8200002, 2.2, 1.4],
+        [-0.8200002, 0, 1.4]
+      ],
+      "center_world": [-0.820000052, 1.1, 2.5],
+      "front_normal_world": [-1, 0, 1.0837207E-07],
+      "width_m": 2.20000029,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "B-L-01",
+      "parent_surface_id": "Rack_B_L_01 ",
+      "corners_world": [
+        [0.8200002, 0, -3.6],
+        [0.8200002, 2.2, -3.6],
+        [0.819999933, 2.2, -1.39999986],
+        [0.819999933, 0, -1.39999986]
+      ],
+      "center_world": [0.820000052, 1.1, -2.49999976],
+      "front_normal_world": [1, 0, 1.08372078E-07],
+      "width_m": 2.2,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "B-L-02",
+      "parent_surface_id": "Rack_B_L_02",
+      "corners_world": [
+        [0.8200002, 0, 1.4],
+        [0.8200002, 2.2, 1.4],
+        [0.819999933, 2.2, 3.60000014],
+        [0.819999933, 0, 3.60000014]
+      ],
+      "center_world": [0.820000052, 1.1, 2.5],
+      "front_normal_world": [1, 0, 1.0837207E-07],
+      "width_m": 2.20000029,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "B-R-01",
+      "parent_surface_id": "Rack_B_R_01",
+      "corners_world": [
+        [3.68, 0, -1.39999986],
+        [3.68, 2.2, -1.39999986],
+        [3.67999983, 2.2, -3.6],
+        [3.67999983, 0, -3.6]
+      ],
+      "center_world": [3.67999983, 1.1, -2.5],
+      "front_normal_world": [-1, 0, 1.08372078E-07],
+      "width_m": 2.2,
+      "height_m": 2.2,
+      "active": true
+    },
+    {
+      "shelf_id": "B-R-02",
+      "parent_surface_id": "Rack_B_R_02",
+      "corners_world": [
+        [3.68, 0, 3.60000014],
+        [3.68, 2.2, 3.60000014],
+        [3.67999983, 2.2, 1.4],
+        [3.67999983, 0, 1.4]
+      ],
+      "center_world": [3.67999983, 1.1, 2.5],
+      "front_normal_world": [-1, 0, 1.0837207E-07],
+      "width_m": 2.20000029,
+      "height_m": 2.2,
+      "active": true
+    }
+  ]
+}

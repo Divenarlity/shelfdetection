@@ -4,7 +4,7 @@ from evaluate_unity import evaluate
 
 def test_multiple_visible_ids_and_unknown_rate(tmp_path):
     pred=tmp_path/"pred"/"run";gt=tmp_path/"gt";pred.mkdir(parents=True);gt.mkdir()
-    (pred/"results.json").write_text(json.dumps({"frame_id":"frame_1","shelves":[
+    (pred/"result.json").write_text(json.dumps({"frame_id":"frame_1","shelves":[
         {"shelf_id":"A"},{"shelf_id":"B"},{"shelf_id":"UNKNOWN_SHELF"}]}),encoding="utf-8")
     (gt/"frame_1.json").write_text(json.dumps({"visible_shelf_ids":["A","B"]}),encoding="utf-8")
     result=evaluate(tmp_path/"pred",gt)

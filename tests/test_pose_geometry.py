@@ -7,8 +7,8 @@ from src.pose_geometry import PoseConfig, assign_pose_ids, generate_candidates, 
 def metadata():
     return {"frame_id":"1","image_path":"x.png","resolution":[100,100],
             "camera_position_world":[0,0,0],
-            "world_to_camera_matrix":[1,0,0,0, 0,1,0,0, 0,0,-1,0, 0,0,0,1],
-            "projection_matrix":[1,0,0,0, 0,1,0,0, 0,0,-1,-.2, 0,0,-1,0]}
+            "camera_rotation_xyzw":[0,0,0,1],
+            "intrinsics":{"fx":50,"fy":50,"cx":50,"cy":50}}
 
 
 def shelf(sid="A-L-01", z=2, normal=(0,0,-1)):
@@ -26,6 +26,10 @@ def test_center_projects_to_center_pixel_and_axis_is_top_left():
 def test_behind_camera_and_backface_are_rejected():
     assert generate_candidates({"shelves":[shelf(z=-2)]},metadata()) == []
     assert generate_candidates({"shelves":[shelf(normal=(0,0,1))]},metadata()) == []
+    far_right=shelf()
+    for point in far_right["corners_world"].values(): point[0] += 100
+    far_right["center_world"][0] += 100
+    assert generate_candidates({"shelves":[far_right]},metadata()) == []
 
 
 def test_assignment_is_one_to_one_and_unknown_on_low_score():
@@ -76,14 +80,32 @@ def test_two_masks_one_known_region_leaves_one_unknown():
     assert ids.count("ONLY")==1 and ids.count("UNKNOWN_SHELF")==1
 
 
-def test_schema_v2_metadata_and_nested_id_rejection(tmp_path):
-    valid={"schema_version":2,"frame_id":"frame_1","image_path":"frame_1.png",
+def test_only_schema_v3_is_accepted_and_nested_identity_is_rejected(tmp_path):
+    valid={"schema_version":3,"frame_id":"frame_1","image_path":"frame_1.png",
            "image":{"width":100,"height":80},"camera":{"position_world":[0,0,0],
-           "rotation_xyzw":[0,0,0,1],"intrinsics":{"fx":90,"fy":90,"cx":50,"cy":40}}}
+           "rotation_xyzw":[0,0,0,1],"intrinsics":{"fx":90,"fy":90,"cx":50,"cy":40}},
+           "pose":{"quality":1,"relocalized":True,"scale_initialized":True}}
     p=tmp_path/"frame.json"; p.write_text(json.dumps(valid),encoding="utf-8")
     assert load_frame_metadata(p)["resolution"]==[100,80]
     valid["camera"]["shelf_id"]="LEAK"; p.write_text(json.dumps(valid),encoding="utf-8")
-    with pytest.raises(ValueError,match="ID/ground-truth"): load_frame_metadata(p)
+    with pytest.raises(ValueError,match="identity/ground-truth"): load_frame_metadata(p)
+    del valid["camera"]["shelf_id"]
+    valid["expected_shelf_ids"]=["A-L-01"]
+    p.write_text(json.dumps(valid),encoding="utf-8")
+    with pytest.raises(ValueError,match="identity/ground-truth"): load_frame_metadata(p)
+    del valid["expected_shelf_ids"]
+    valid["schema_version"]=2
+    p.write_text(json.dumps(valid),encoding="utf-8")
+    with pytest.raises(ValueError,match="schema_version 3"): load_frame_metadata(p)
+
+
+def test_schema_v3_requires_pose_state(tmp_path):
+    data={"schema_version":3,"frame_id":"frame_1","image":{"width":100,"height":80},
+          "camera":{"position_map":[0,0,0],"rotation_xyzw":[0,0,0,1],
+                    "intrinsics":{"fx":90,"fy":90,"cx":50,"cy":40}}}
+    path=tmp_path/"frame_1.json"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError,match="requires.*pose"): load_frame_metadata(path)
 
 
 def test_intrinsics_projection_uses_unity_forward_and_top_left_y():
