@@ -69,7 +69,12 @@ def _load_model(path, label):
     if not path.is_file():
         raise FileNotFoundError(f"{label} file not found: {path}")
     from ultralytics import YOLO
-    return YOLO(str(path))
+    model = YOLO(str(path))
+    LOG.info(
+        "%s:\npath=%s\ntask=%s\nclasses=%s",
+        label, path, model.task, model.names,
+    )
+    return model
 
 
 def create_app(
@@ -101,6 +106,16 @@ def create_app(
             load_pose_config(pose_path),
             pipeline_config,
         )
+        if shelf_model is not None:
+            LOG.info(
+                "Shelf model:\npath=%s\ntask=%s\nclasses=%s",
+                shelf_path, pipeline.shelf_task, pipeline.shelf_names,
+            )
+        if empty_model is not None:
+            LOG.info(
+                "Empty shelf model:\npath=%s\ntask=%s\nclasses=%s",
+                empty_path, pipeline.empty_task, pipeline.empty_names,
+            )
         app.state.service = InferenceService(
             pipeline,
             debug_live=debug_live,

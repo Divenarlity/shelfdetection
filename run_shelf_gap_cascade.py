@@ -21,7 +21,7 @@ def resolve(path: Path):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Run shelf segmentation, pose/map matching, and matched-shelf empty detection."
+        description="Run task-aware shelf proposals, full-frame gated empty detection, and pose/map identity."
     )
     parser.add_argument("--source", type=Path, required=True, help="Saved Unity RGB frame")
     parser.add_argument("--frame-metadata", type=Path, required=True, help="ID-free Unity metadata JSON")

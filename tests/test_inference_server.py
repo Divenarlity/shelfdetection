@@ -80,7 +80,7 @@ def test_server_imports_shared_pipeline_not_offline_cli():
     assert "run_shelf_gap_cascade" not in inspect.getsource(inference_server)
 
 
-def test_health_and_valid_request_use_one_matched_full_shelf_roi(tmp_path):
+def test_health_and_valid_request_use_one_full_frame_empty_inference(tmp_path):
     app, shelf_model, empty_model, metadata, image = setup(tmp_path)
     with TestClient(app) as client:
         assert client.get("/health").json() == {
@@ -90,16 +90,21 @@ def test_health_and_valid_request_use_one_matched_full_shelf_roi(tmp_path):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["success"] and body["frame_id"] == "frame_000001"
+    assert body["image"] == {"width": 120, "height": 80}
     assert body["counts"]["segmented_shelves"] == 2
     assert body["counts"]["matched_shelves"] == body["counts"]["unknown_shelves"] == 1
-    assert body["counts"]["roi_inferences"] == 1
+    assert body["empty_inference_mode"] == "full_frame_gated"
+    assert body["counts"]["roi_inferences"] == 0
+    assert body["counts"]["empty_model_predict_calls"] == 1
+    assert body["counts"]["empty_inference_inputs"] == 1
     assert body["counts"]["final_empty_spaces"] == 0
     assert "debug" not in body
     assert len(shelf_model.calls) == len(empty_model.calls) == 1
     assert shelf_model.calls[0]["source"].shape == (80, 120, 3)
-    assert empty_model.calls[0]["source"].shape != (80, 120, 3)
+    assert empty_model.calls[0]["source"].shape == (80, 120, 3)
     matched = next(shelf for shelf in body["shelves"] if shelf["shelf_id"] == "A-L-01")
-    assert matched["empty_roi_mode"] == "full_shelf"
+    assert matched["empty_roi_mode"] is None
+    assert matched["empty_inference_source"] == "full_frame"
 
 
 def test_invalid_metadata_ground_truth_and_resolution_are_rejected_before_models(tmp_path):
@@ -132,10 +137,10 @@ def test_requests_do_not_run_models_concurrently(tmp_path):
         assert first.result(timeout=10).status_code == 200
 
 
-def test_wrong_model_contract_fails_startup(tmp_path):
+def test_detection_shelf_model_is_supported_and_unsupported_task_fails_startup(tmp_path):
     wrong = ShelfModel()
-    wrong.task = "detect"
+    wrong.task = "pose"
     app, _, _, _, _ = setup(tmp_path, shelf_model=wrong)
-    with pytest.raises(RuntimeError, match="segment"):
+    with pytest.raises(RuntimeError, match="detect.*segment"):
         with TestClient(app):
             pass

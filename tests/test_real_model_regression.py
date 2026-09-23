@@ -27,12 +27,14 @@ def test_a_l_02_live_false_negative_regression_with_real_models():
         YOLO(str(empty_weights)),
         load_store_map(DATA / "store_map.json"),
         load_pose_config(ROOT / "configs" / "pose_geometry.yaml"),
-        PipelineConfig(empty_roi_mode="full_shelf", empty_conf=.10),
+        PipelineConfig(empty_inference_mode="full_frame_gated", empty_conf=.10),
     )
     result = pipeline.infer(image, load_frame_metadata(DATA / "metadata.json")).result
     shelf = next(item for item in result["shelves"] if item["shelf_id"] == "A-L-02")
     assert result["counts"]["matched_shelves"] == 1
-    assert result["counts"]["roi_inferences"] == 1
+    assert result["empty_inference_mode"] == "full_frame_gated"
+    assert result["counts"]["roi_inferences"] == 0
+    assert result["counts"]["empty_model_predict_calls"] == 1
     assert result["counts"]["final_empty_spaces"] == 1
     assert shelf["empty_space_count"] == 1
     assert shelf["detections"][0]["confidence"] >= .10

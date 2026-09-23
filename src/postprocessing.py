@@ -74,20 +74,45 @@ def local_to_global(box, roi, image_shape):
     ]
 
 
-def mask_box_relation(mask, box, min_overlap: float):
+def mask_box_metrics(mask, box):
     h, w = mask.shape
     x1, y1, x2, y2 = box
     ix1, iy1 = max(0, int(np.floor(x1))), max(0, int(np.floor(y1)))
     ix2, iy2 = min(w, int(np.ceil(x2))), min(h, int(np.ceil(y2)))
     if ix2 <= ix1 or iy2 <= iy1:
-        return False, 0.0, False
+        return 0.0, False
     cx = int(np.clip((x1 + x2) / 2, 0, w - 1))
     cy = int(np.clip((y1 + y2) / 2, 0, h - 1))
     center_inside = bool(mask[cy, cx])
     overlap = float(
         np.count_nonzero(mask[iy1:iy2, ix1:ix2]) / ((ix2 - ix1) * (iy2 - iy1))
     )
+    return overlap, center_inside
+
+
+def mask_box_relation(mask, box, min_overlap: float):
+    """Legacy ROI validation: center inclusion remains a secondary acceptance path."""
+    overlap, center_inside = mask_box_metrics(mask, box)
     return center_inside or overlap >= min_overlap, overlap, center_inside
+
+
+def best_shelf_for_box(shelves, box):
+    """Return the single shelf with the greatest bbox-to-mask containment ratio."""
+    ranked = []
+    for shelf in shelves:
+        overlap, center_inside = mask_box_metrics(shelf["mask"], box)
+        ranked.append((
+            overlap,
+            int(center_inside),
+            float(shelf.get("confidence", shelf.get("segmentation_confidence", 0.0))),
+            -int(shelf.get("shelf_index", 0)),
+            shelf,
+            center_inside,
+        ))
+    if not ranked:
+        return None, 0.0, False
+    overlap, _, _, _, shelf, center_inside = max(ranked, key=lambda item: item[:4])
+    return shelf, float(overlap), bool(center_inside)
 
 
 def box_iou(a, b):
@@ -110,28 +135,28 @@ def intersection_over_smaller(a, b):
 
 
 def deduplicate(detections: list[dict], threshold: float):
-    """Merge repeated ROI/tile hits only within the same physical shelf."""
-    remaining = list(detections)
+    """Class-aware global NMS; overlapping shelf ROIs cannot return the same gap twice."""
+    remaining = sorted(
+        detections,
+        key=lambda item: (
+            -item["mask_overlap_ratio"],
+            -int(item["center_inside_mask"]),
+            int(item.get("touches_tile_edge", False)),
+            -item["confidence"],
+        ),
+    )
     kept = []
     while remaining:
         seed = remaining.pop(0)
-        cluster = [seed]
         rest = []
         for candidate in remaining:
             a, b = seed["global_bbox_xyxy"], candidate["global_bbox_xyxy"]
-            same_shelf = seed["assigned_shelf_id"] == candidate["assigned_shelf_id"]
+            same_class = seed.get("class_id", 0) == candidate.get("class_id", 0)
             overlaps = box_iou(a, b) >= threshold or intersection_over_smaller(a, b) >= threshold
-            (cluster if same_shelf and overlaps else rest).append(candidate)
+            if not (same_class and overlaps):
+                rest.append(candidate)
         remaining = rest
-        cluster.sort(
-            key=lambda item: (
-                -item["mask_overlap_ratio"],
-                -int(item["center_inside_mask"]),
-                int(item.get("touches_tile_edge", False)),
-                -item["confidence"],
-            )
-        )
-        kept.append(cluster[0])
+        kept.append(seed)
     return kept, len(detections) - len(kept)
 
 
