@@ -34,6 +34,8 @@ def low_confidence_records(result, region, image_shape, production_conf, min_mas
             "local_bbox_xyxy": [float(v) for v in box],
             "global_bbox_xyxy": global_box,
             "assigned_shelf_id": region["shelf"]["shelf_id"],
+            "parent_shelf_id": region["shelf"].get("parent_shelf_id"),
+            "shelf_level_id": region["shelf"].get("shelf_level_id"),
             "region_id": region["region_id"],
             "tile_id": region["tile_id"],
             "center_inside_mask": center_inside,
@@ -128,6 +130,17 @@ class LiveDebugRecorder:
                  f"{shelf['shelf_id']} map={shelf.get('mapping_confidence', 0):.2f}")
         _write_image(self.directory / "shelf_matching.jpg", canvas)
 
+    def visualization(self, input_image, native_shelf_plot, final_annotated):
+        """Save the exact three-stage production visualization for inspection."""
+        _write_image(self.directory / "01_input.jpg", input_image)
+        _write_image(self.directory / "02_native_shelf_plot.jpg", native_shelf_plot)
+        _write_image(self.directory / "03_final_annotated.jpg", final_annotated)
+        # Stable names are convenient for tools that do not sort numbered stages.
+        if not (self.directory / "incoming_frame.jpg").exists():
+            _write_image(self.directory / "incoming_frame.jpg", input_image)
+        _write_image(self.directory / "native_shelf_plot.jpg", native_shelf_plot)
+        _write_image(self.directory / "final_annotated.jpg", final_annotated)
+
     def shelf(self, image, shelf):
         directory = self.directory / shelf["shelf_id"]
         directory.mkdir(exist_ok=True)
@@ -150,6 +163,9 @@ class LiveDebugRecorder:
                      region["shelf"]["mask"][y1:y2, x1:x2].astype(np.uint8) * 255)
 
     def production_input(self, region):
+        shelf_level_id = region["shelf"].get("shelf_level_id")
+        if shelf_level_id:
+            _write_image(self.directory / f"{shelf_level_id}_input.jpg", region["image"])
         if region["kind"] == "tile":
             self.tile_input(region)
 
@@ -162,6 +178,9 @@ class LiveDebugRecorder:
         for item in low_confidence:
             _box(raw_image, item["local_bbox_xyxy"], (255, 0, 255),
                  f"{item['confidence']:.2f}")
+        for item in production_raw:
+            _box(raw_image, item["roi_bbox_xyxy"], (0, 165, 255),
+                 f"production {item['confidence']:.2f}")
         for item in accepted:
             _box(accepted_image, item["roi_bbox_xyxy"], (0, 220, 0),
                  f"{item['confidence']:.2f}")
@@ -172,8 +191,14 @@ class LiveDebugRecorder:
         _write_image(directory / f"{prefix}{stem}_raw_conf001.jpg", raw_image)
         _write_image(directory / f"{prefix}{stem}_accepted.jpg", accepted_image)
         _write_image(directory / f"{prefix}{stem}_rejected.jpg", rejected_image)
+        shelf_level_id = region["shelf"].get("shelf_level_id")
+        if shelf_level_id:
+            _write_image(self.directory / f"{shelf_level_id}_empty_result.jpg", raw_image)
         (directory / f"{stem}_predictions.json").write_text(
             json.dumps({"region_id": region["region_id"],
+                        "parent_shelf_id": region["shelf"].get("parent_shelf_id"),
+                        "shelf_level_id": shelf_level_id,
+                        "roi_dimensions": [region["image"].shape[1], region["image"].shape[0]],
                         "raw_predictions_conf001": low_confidence,
                         "raw_predictions_production_conf": production_raw,
                         "accepted_before_dedup": accepted,

@@ -7,6 +7,7 @@ from src.model_contracts import validate_model_contract
 from src.pipeline import (
     EmptyInferenceMode, PipelineConfig, ShelfInferencePipeline,
     _full_frame_prediction_records, _prediction_records, build_regions, extract_shelves,
+    render_visualization,
 )
 from src.pose_geometry import PoseConfig
 from src.postprocessing import (
@@ -33,14 +34,21 @@ class Boxes:
 
 class ShelfModel:
     task, names = "segment", {0: "shelves"}
-    def __init__(self): self.calls = []
+    def __init__(self): self.calls, self.plot_calls = [], 0
     def predict(self, **kwargs):
         self.calls.append(kwargs)
         masks = np.zeros((2, 80, 120), np.float32)
         masks[0, 20:60, 40:80] = 1
         masks[1, 0:10, 0:10] = 1
-        return [SimpleNamespace(masks=SimpleNamespace(data=Tensor(masks)),
-                                boxes=Boxes([.9, .8], [0, 0]))]
+        result = SimpleNamespace(masks=SimpleNamespace(data=Tensor(masks)),
+                                 boxes=Boxes([.9, .8], [0, 0]))
+        def plot(img=None, **_):
+            self.plot_calls += 1
+            canvas = img.copy()
+            canvas[20:60, 40:80] = (255, 0, 0)
+            return canvas
+        result.plot = plot
+        return [result]
 
 
 class EmptyModel:
@@ -141,7 +149,7 @@ def test_global_deduplication_assigns_overlap_to_best_shelf():
     assert removed == 1 and not kept[0]["touches_tile_edge"]
 
 
-def test_pipeline_runs_both_models_full_frame_but_only_matched_shelves_are_eligible():
+def test_default_pipeline_runs_one_shelf_level_roi_input_for_only_matched_shelf():
     shelf_model, empty_model = ShelfModel(), EmptyModel()
     pipeline = ShelfInferencePipeline(
         shelf_model, empty_model, store_map(),
@@ -153,21 +161,46 @@ def test_pipeline_runs_both_models_full_frame_but_only_matched_shelves_are_eligi
     assert counts["visible_candidates"] == 1
     assert counts["segmented_shelves"] == 2
     assert counts["matched_shelves"] == counts["unknown_shelves"] == 1
-    assert outcome.result["empty_inference_mode"] == "full_frame_gated"
-    assert counts["roi_inferences"] == counts["shelf_rois_selected"] == 0
+    assert outcome.result["empty_inference_mode"] == "shelf_level_roi"
+    assert counts["roi_inferences"] == counts["shelf_rois_selected"] == 1
     assert counts["empty_model_predict_calls"] == counts["empty_inference_inputs"] == 1
     assert counts["shelf_rois_limited"] == counts["final_empty_spaces"] == 0
     assert len(shelf_model.calls) == len(empty_model.calls) == 1
+    assert shelf_model.plot_calls == 1
     assert shelf_model.calls[0]["source"].shape == image.shape
-    assert empty_model.calls[0]["source"].shape == image.shape
+    assert empty_model.calls[0]["source"].shape != image.shape
     unknown = next(item for item in outcome.result["shelves"] if item["shelf_id"] == "UNKNOWN_SHELF")
     assert unknown["status"] == "UNLOCALIZED" and unknown["roi_bbox_xyxy"] is None
-    assert unknown["empty_inference_source"] == "full_frame"
+    assert unknown["empty_inference_source"] == "shelf_level_roi"
     assert not unknown["empty_inference_selected"]
     assert next(
-        item for item in outcome.result["shelves"] if item["shelf_id"] == "A-L-01"
+        item for item in outcome.result["shelves"] if item["shelf_id"] == "A-L-01-01"
     )["empty_inference_selected"]
+    known = next(item for item in outcome.result["shelves"] if item["shelf_id"] == "A-L-01-01")
+    assert known["parent_shelf_id"] == "A-L-01"
+    assert known["shelf_level_id"] == "A-L-01-01" and known["level_number"] == 1
+    assert len(unknown["mask_polygon"]) >= 3
+    assert all(
+        set(point) == {"x", "y"}
+        and isinstance(point["x"], int)
+        and isinstance(point["y"], int)
+        for point in unknown["mask_polygon"]
+    )
     assert "debug" not in outcome.result
+
+
+def test_visualization_reuses_native_plot_and_draws_only_final_accepted_boxes():
+    image = np.zeros((80, 120, 3), np.uint8)
+    calls = []
+    shelf_result = SimpleNamespace(plot=lambda img: (calls.append(img.copy()) or
+                                                      np.full_like(img, (10, 20, 30))))
+    accepted = [{"global_bbox_xyxy": [40, 30, 70, 55], "confidence": .876}]
+    native, annotated = render_visualization(shelf_result, image, accepted)
+    assert len(calls) == 1
+    assert np.array_equal(native[5, 5], [10, 20, 30])
+    assert np.array_equal(annotated[30, 40], [0, 0, 255])
+    # A non-final candidate location is untouched by the custom annotation pass.
+    assert np.array_equal(annotated[70, 100], native[70, 100])
 
 
 def test_explicit_tile_mode_skips_unlocalized_shelf_proposals():
@@ -208,13 +241,17 @@ def test_no_shelf_rejects_all_full_frame_empties_and_roi_limit_is_roi_only():
     class NoShelfModel(ShelfModel):
         def predict(self, **kwargs):
             self.calls.append(kwargs)
-            return [SimpleNamespace(masks=None, boxes=Boxes([], []))]
+            result = SimpleNamespace(masks=None, boxes=Boxes([], []))
+            result.plot = lambda img=None, **_: img.copy()
+            return [result]
 
     empty = EmptyModel()
     no_shelf = ShelfInferencePipeline(
         NoShelfModel(), empty, store_map(), PoseConfig(min_visible_area=1), PipelineConfig(),
     ).infer(np.zeros((80, 120, 3), np.uint8), metadata()).result
-    assert no_shelf["shelves"] == [] and len(empty.calls) == 1
+    assert no_shelf["shelves"] == [] and len(empty.calls) == 0
+    assert no_shelf["counts"]["empty_model_predict_calls"] == 0
+    assert no_shelf["counts"]["empty_inference_inputs"] == 0
     assert no_shelf["counts"]["final_empty_spaces"] == 0
 
     empty = EmptyModel()
@@ -235,7 +272,7 @@ def test_unlocalized_shelf_mask_cannot_produce_a_final_empty_detection():
     ).infer(np.zeros((80, 120, 3), np.uint8), metadata()).result
     assert len(result["shelves"]) == 2
     assert result["counts"]["final_empty_spaces"] == 1
-    known = next(shelf for shelf in result["shelves"] if shelf["shelf_id"] == "A-L-01")
+    known = next(shelf for shelf in result["shelves"] if shelf["shelf_id"] == "A-L-01-01")
     unknown = next(shelf for shelf in result["shelves"] if shelf["shelf_id"] == "UNKNOWN_SHELF")
     assert known["empty_space_count"] == 1
     assert unknown["empty_space_count"] == 0
@@ -283,6 +320,66 @@ def test_shelf_roi_mode_remains_explicit_and_maps_local_boxes_to_global():
     )
 
 
+def test_shelf_level_mode_batches_all_levels_and_numbers_top_to_bottom():
+    class MultiShelfModel(ShelfModel):
+        def predict(self, **kwargs):
+            self.calls.append(kwargs)
+            masks = np.zeros((3, 80, 120), np.float32)
+            masks[0, 44:54, 42:78] = 1
+            masks[1, 22:32, 42:78] = 1
+            masks[2, 0:5, 0:5] = 1
+            result = SimpleNamespace(
+                masks=SimpleNamespace(data=Tensor(masks)),
+                boxes=Boxes([.95, .85, .75], [0, 0, 0]),
+            )
+            result.plot = lambda img=None, **_: img.copy()
+            return [result]
+
+    shelf_model, empty_model = MultiShelfModel(), EmptyModel()
+    outcome = ShelfInferencePipeline(
+        shelf_model, empty_model, store_map(),
+        PoseConfig(min_visible_area=1, min_score=.20), PipelineConfig(),
+    ).infer(np.zeros((80, 120, 3), np.uint8), metadata())
+    result = outcome.result
+    known = [item for item in result["shelves"] if item["parent_shelf_id"] == "A-L-01"]
+    assert {item["shelf_level_id"] for item in known} == {"A-L-01-01", "A-L-01-02"}
+    assert next(item for item in known if item["level_number"] == 1)["global_bbox_xyxy"][1] == 22
+    assert result["counts"]["empty_model_predict_calls"] == 1
+    assert result["counts"]["empty_inference_calls"] == 1
+    assert result["counts"]["empty_inference_inputs"] == 2
+    assert result["counts"]["roi_inferences"] == 2
+    assert isinstance(empty_model.calls[0]["source"], list)
+    assert len(empty_model.calls[0]["source"]) == 2
+    assert result["timing"]["empty_batch_inference_ms"] >= 0
+    assert len(shelf_model.calls) == 1
+
+
+def test_semantic_detection_fields_and_section_use_level_geometry():
+    image_shape = (40, 90, 3)
+    mask = np.zeros(image_shape[:2], bool)
+    mask[10:30, 30:60] = True
+    shelf = {
+        "shelf_id": "A-L-02-03", "parent_shelf_id": "A-L-02",
+        "shelf_level_id": "A-L-02-03", "shelf_index": 7, "mask": mask,
+    }
+    region = {
+        "shelf": shelf, "bbox": [28, 8, 62, 32], "region_id": "A-L-02-03-FULL",
+        "tile_id": "A-L-02-03-FULL", "kind": "full_shelf",
+        "inference_source": "shelf_level_roi",
+        "image": np.zeros((24, 34, 3), np.uint8),
+    }
+    raw, accepted, rejected = _prediction_records(
+        SimpleNamespace(boxes=Boxes([.8], [0], [[3, 4, 10, 15]])),
+        region, image_shape, {0: "empty_shelf"}, .3,
+    )
+    assert not rejected and raw == accepted
+    detection = accepted[0]
+    assert detection["global_bbox_xyxy"] == [31., 12., 38., 23.]
+    assert detection["parent_shelf_id"] == "A-L-02"
+    assert detection["shelf_level_id"] == "A-L-02-03"
+    assert section_for_box(detection["global_bbox_xyxy"], [30, 10, 60, 30]) == "SOL"
+
+
 def test_debug_controls_are_strictly_opt_in(tmp_path):
     shelf_model, empty_model = ShelfModel(), EmptyModel()
     pipeline = ShelfInferencePipeline(
@@ -294,3 +391,5 @@ def test_debug_controls_are_strictly_opt_in(tmp_path):
     assert len(empty_model.calls) > result["counts"]["roi_inferences"]
     assert (tmp_path / "control_full_frame.jpg").is_file()
     assert (tmp_path / "production_final.jpg").is_file()
+    assert (tmp_path / "A-L-01-01_input.jpg").is_file()
+    assert (tmp_path / "A-L-01-01_empty_result.jpg").is_file()

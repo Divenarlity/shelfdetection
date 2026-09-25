@@ -7,6 +7,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from src.live_debug import LiveDebugRecorder, low_confidence_records, stage_counts
 from src.model_contracts import validate_model_contract
@@ -27,6 +28,7 @@ from src.postprocessing import (
 class EmptyInferenceMode(str, Enum):
     FULL_FRAME_GATED = "full_frame_gated"
     SHELF_ROI = "shelf_roi"
+    SHELF_LEVEL_ROI = "shelf_level_roi"
 
 
 @dataclass(frozen=True)
@@ -35,8 +37,9 @@ class PipelineConfig:
     empty_conf: float = 0.10
     shelf_imgsz: int = 960
     empty_imgsz: int = 640
-    empty_inference_mode: EmptyInferenceMode = EmptyInferenceMode.FULL_FRAME_GATED
+    empty_inference_mode: EmptyInferenceMode = EmptyInferenceMode.SHELF_LEVEL_ROI
     roi_padding_ratio: float = 0.02
+    shelf_level_roi_padding: float = 0.02
     empty_roi_mode: str = "full_shelf"
     min_mask_overlap: float = 0.30
     dedup_iou: float = 0.50
@@ -56,8 +59,8 @@ class PipelineConfig:
             value = getattr(self, name)
             if not 0 <= value <= 1:
                 raise ValueError(f"{name} must be in [0, 1]")
-        if self.roi_padding_ratio < 0:
-            raise ValueError("roi_padding_ratio cannot be negative")
+        if self.roi_padding_ratio < 0 or self.shelf_level_roi_padding < 0:
+            raise ValueError("ROI padding ratios cannot be negative")
         if self.empty_roi_mode not in {"full_shelf", "tiles"}:
             raise ValueError("empty_roi_mode must be full_shelf or tiles")
         if self.tile_size <= 0 or not 0 <= self.tile_overlap < 1:
@@ -70,6 +73,7 @@ class PipelineConfig:
 class PipelineOutcome:
     result: dict
     annotated_image: np.ndarray
+    native_shelf_plot: np.ndarray
 
 
 def extract_shelves(result, image_shape, shelf_names, shelf_task="segment"):
@@ -155,7 +159,9 @@ def build_regions(shelves, image, config: PipelineConfig, mode=None):
             crop = image[y1:y2, x1:x2].copy()
             if crop.size == 0:
                 continue
-            prefix = f"SHELF-{shelf.get('shelf_index', fallback_index):02d}"
+            prefix = shelf.get("shelf_level_id") or (
+                f"SHELF-{shelf.get('shelf_index', fallback_index):02d}"
+            )
             region_id = (
                 f"{prefix}-FULL" if kind == "full_shelf" else f"{prefix}-TILE-{index:02d}"
             )
@@ -186,12 +192,14 @@ def _prediction_records(result, region, image_shape, empty_names, min_mask_overl
             "roi_bbox_xyxy": local_box,
             "global_bbox_xyxy": global_box,
             "assigned_shelf_id": region["shelf"]["shelf_id"],
+            "parent_shelf_id": region["shelf"].get("parent_shelf_id", UNKNOWN_SHELF),
+            "shelf_level_id": region["shelf"].get("shelf_level_id"),
             "assigned_shelf_index": region["shelf"]["shelf_index"],
             "class_id": int(class_id),
             "class_name": empty_names[int(class_id)],
             "region_id": region["region_id"],
             "tile_id": region["tile_id"],
-            "inference_source": "shelf_roi",
+            "inference_source": region.get("inference_source", "shelf_roi"),
             "mask_overlap_ratio": overlap,
             "center_inside_mask": center_inside,
             "touches_tile_edge": bool(
@@ -237,6 +245,8 @@ def _full_frame_prediction_records(
             "roi_bbox_xyxy": None,
             "global_bbox_xyxy": global_box,
             "assigned_shelf_id": shelf["shelf_id"] if passes else None,
+            "parent_shelf_id": shelf.get("parent_shelf_id") if passes else None,
+            "shelf_level_id": shelf.get("shelf_level_id") if passes else None,
             "assigned_shelf_index": shelf["shelf_index"] if passes else None,
             "candidate_shelf_id": shelf["shelf_id"] if shelf is not None else None,
             "candidate_shelf_index": shelf["shelf_index"] if shelf is not None else None,
@@ -257,27 +267,58 @@ def _full_frame_prediction_records(
     return raw, accepted, rejected
 
 
-def _render(image, shelves, detections):
-    canvas, overlay = image.copy(), image.copy()
-    for shelf in shelves:
-        color = (110, 110, 110) if shelf["shelf_id"] == UNKNOWN_SHELF else (0, 150, 0)
-        overlay[shelf["mask"]] = color
-        x1, y1, x2, y2 = shelf["bbox"]
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(canvas, shelf["shelf_id"], (x1, max(18, y1 - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX, .55, color, 2, cv2.LINE_AA)
-    canvas = cv2.addWeighted(canvas, .72, overlay, .28, 0)
+def _label_font(size):
+    for candidate in (
+        "C:/Windows/Fonts/arialbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+    ):
+        try:
+            return ImageFont.truetype(candidate, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def render_visualization(shelf_result, image, detections):
+    """Reuse the production shelf result and add only final accepted empty boxes."""
+    native_plot = shelf_result.plot(img=image.copy())
+    if not isinstance(native_plot, np.ndarray) or native_plot.shape != image.shape:
+        raise RuntimeError("Shelf result plot returned an invalid visualization image.")
+    canvas = Image.fromarray(cv2.cvtColor(native_plot, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(canvas)
+    font = _label_font(max(16, round(image.shape[1] / 64)))
     for detection in detections:
         x1, y1, x2, y2 = map(lambda value: int(round(value)), detection["global_bbox_xyxy"])
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 0, 255), 3)
-        label = f"{detection['assigned_shelf_id']} {detection['section']} {detection['confidence']:.2f}"
-        cv2.putText(canvas, label, (x1, max(18, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX,
-                    .5, (0, 0, 255), 2, cv2.LINE_AA)
-    return canvas
+        x1 = max(0, min(image.shape[1] - 1, x1))
+        y1 = max(0, min(image.shape[0] - 1, y1))
+        x2 = max(0, min(image.shape[1] - 1, x2))
+        y2 = max(0, min(image.shape[0] - 1, y2))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        draw.rectangle((x1, y1, x2, y2), outline=(255, 0, 0), width=3)
+        semantic_id = detection.get("shelf_level_id") or detection.get("assigned_shelf_id", "")
+        section = detection.get("section", "")
+        prefix = " ".join(value for value in (semantic_id, section) if value)
+        label = (
+            f"{prefix} | BOŞLUK " if prefix else "BOŞLUK "
+        ) + f"%{round(max(0.0, min(1.0, detection['confidence'])) * 100)}"
+        bounds = draw.textbbox((0, 0), label, font=font, stroke_width=1)
+        label_width = bounds[2] - bounds[0] + 10
+        label_height = bounds[3] - bounds[1] + 8
+        label_top = max(0, y1 - label_height)
+        label_left = max(0, min(x1, image.shape[1] - label_width))
+        draw.rectangle((label_left, label_top,
+                        min(image.shape[1] - 1, label_left + label_width), y1),
+                       fill=(255, 0, 0))
+        draw.text((label_left + 5, label_top + 3), label, font=font, fill=(255, 255, 255),
+                  stroke_width=1, stroke_fill=(255, 0, 0))
+    annotated = cv2.cvtColor(np.asarray(canvas), cv2.COLOR_RGB2BGR)
+    return native_plot, annotated
 
 
 class ShelfInferencePipeline:
-    """Authoritative full-frame shelf/empty inference with mask-gated association."""
+    """Shelf segmentation followed by semantic shelf-level empty inference."""
 
     def __init__(self, shelf_model, empty_model, store_map, pose_config,
                  config: PipelineConfig | None = None):
@@ -325,6 +366,9 @@ class ShelfInferencePipeline:
         full_frame_mode = (
             self.config.empty_inference_mode == EmptyInferenceMode.FULL_FRAME_GATED
         )
+        shelf_level_mode = (
+            self.config.empty_inference_mode == EmptyInferenceMode.SHELF_LEVEL_ROI
+        )
         eligible_shelves = [
             shelf for shelf in shelves if shelf["shelf_id"] != UNKNOWN_SHELF
         ]
@@ -333,7 +377,7 @@ class ShelfInferencePipeline:
             shelf["roi_bbox"] = None
             shelf["empty_roi_mode"] = None
             shelf["empty_inference_source"] = (
-                "full_frame" if full_frame_mode else "shelf_roi"
+                "full_frame" if full_frame_mode else self.config.empty_inference_mode.value
             )
             shelf["empty_inference_selected"] = (
                 full_frame_mode and shelf["shelf_id"] != UNKNOWN_SHELF
@@ -342,21 +386,31 @@ class ShelfInferencePipeline:
         regions = []
         per_region = []
         if not full_frame_mode:
-            selected_indices = {
-                shelf["shelf_index"]
-                for shelf in eligible_shelves[:self.config.max_shelf_rois]
-            }
+            selected = (
+                eligible_shelves
+                if shelf_level_mode
+                else eligible_shelves[:self.config.max_shelf_rois]
+            )
+            selected_indices = {shelf["shelf_index"] for shelf in selected}
             for shelf in shelves:
                 shelf["empty_inference_selected"] = shelf["shelf_index"] in selected_indices
                 if shelf["empty_inference_selected"]:
+                    padding = (
+                        self.config.shelf_level_roi_padding
+                        if shelf_level_mode else self.config.roi_padding_ratio
+                    )
                     shelf["roi_bbox"] = padded_roi(
-                        shelf["bbox"], image.shape, self.config.roi_padding_ratio,
+                        shelf["bbox"], image.shape, padding,
                     )
                     if recorder:
                         recorder.shelf(image, shelf)
-            regions = build_regions(shelves, image, self.config)
+            regions = build_regions(
+                shelves, image, self.config,
+                "full_shelf" if shelf_level_mode else None,
+            )
             for region in regions:
                 region["shelf"]["empty_roi_mode"] = region["kind"]
+                region["inference_source"] = self.config.empty_inference_mode.value
                 if recorder:
                     recorder.production_input(region)
 
@@ -396,6 +450,9 @@ class ShelfInferencePipeline:
                 per_region.append({
                     "region_id": region["region_id"],
                     "shelf_id": region["shelf"]["shelf_id"],
+                    "parent_shelf_id": region["shelf"].get("parent_shelf_id"),
+                    "shelf_level_id": region["shelf"].get("shelf_level_id"),
+                    "roi_dimensions": [region["image"].shape[1], region["image"].shape[0]],
                     "production_predictions": region_raw,
                     "raw_predictions_conf001": [],
                 })
@@ -418,26 +475,35 @@ class ShelfInferencePipeline:
             sections = {name: sum(item["section"] == name for item in detections)
                         for name in ("SOL", "ORTA", "SAĞ")}
             status = (
+                "UNLOCALIZED" if shelf["shelf_id"] == UNKNOWN_SHELF else
                 "ROI_LIMITED" if (
                     not full_frame_mode and not shelf["empty_inference_selected"]
                 ) else
-                "UNLOCALIZED" if shelf["shelf_id"] == UNKNOWN_SHELF else
                 "EMPTY_SPACE_DETECTED" if detections else
                 "NO_EMPTY_SPACE"
+            )
+            mask_polygon = (
+                contour_polygon(shelf["mask"])
+                if shelf["has_segmentation_mask"] else []
             )
             output_shelves.append({
                 "shelf_index": shelf["shelf_index"],
                 "shelf_id": shelf["shelf_id"],
+                "parent_shelf_id": shelf.get("parent_shelf_id", UNKNOWN_SHELF),
+                "shelf_level_id": shelf.get("shelf_level_id"),
+                "level_number": shelf.get("level_number"),
                 "model_task": shelf["model_task"],
                 "confidence": shelf["confidence"],
                 "segmentation_confidence": shelf["segmentation_confidence"],
                 "mapping_confidence": shelf.get("mapping_confidence", 0.0),
                 "mapping_scores": shelf.get("mapping_scores", {}),
                 "status": status,
-                "mask_polygon": (
-                    contour_polygon(shelf["mask"])
-                    if shelf["has_segmentation_mask"] else []
-                ),
+                # JsonUtility reliably deserializes arrays of objects, unlike
+                # nested numeric arrays. Coordinates remain original-image pixels.
+                "mask_polygon": [
+                    {"x": int(point[0]), "y": int(point[1])}
+                    for point in mask_polygon
+                ],
                 "bbox_xyxy": shelf["bbox"],
                 "global_bbox_xyxy": shelf["bbox"],
                 "roi_bbox_xyxy": shelf["roi_bbox"],
@@ -448,48 +514,81 @@ class ShelfInferencePipeline:
                 "sections": sections,
                 "detections": detections,
             })
+        output_shelves.sort(key=lambda shelf: (
+            shelf["parent_shelf_id"] == UNKNOWN_SHELF,
+            shelf["parent_shelf_id"],
+            shelf["level_number"] if shelf["level_number"] is not None else 1_000_000,
+            shelf["shelf_index"],
+        ))
+
+        visualization_started = time.perf_counter()
+        native_shelf_plot, annotated_image = render_visualization(
+            shelf_result, image, final,
+        )
+        visualization_done = time.perf_counter()
 
         result = {
             "frame_id": metadata["frame_id"],
             "image": {"width": width, "height": height},
             "strategy": (
                 "full_frame_empty_mask_gated_with_pose_mapping" if full_frame_mode
+                else "detected_shelf_level_roi_batch_with_pose_mapping" if shelf_level_mode
                 else "shelf_model_roi_cascade_with_pose_mapping"
             ),
             "model_tasks": {"shelf": self.shelf_task, "empty_shelf": self.empty_task},
             "empty_inference_mode": self.config.empty_inference_mode.value,
-            "empty_roi_mode": None if full_frame_mode else self.config.empty_roi_mode,
+            "empty_roi_mode": (
+                None if full_frame_mode else
+                "full_shelf" if shelf_level_mode else self.config.empty_roi_mode
+            ),
             "thresholds": {
                 "shelf_conf": self.config.shelf_conf,
                 "empty_conf": self.config.empty_conf,
                 "min_mask_overlap": self.config.min_mask_overlap,
                 "dedup_iou": self.config.dedup_iou,
                 "max_shelf_rois": self.config.max_shelf_rois,
+                "shelf_level_roi_padding": self.config.shelf_level_roi_padding,
             },
             "timing": {
                 "geometry_seconds": geometry_done - started,
                 "shelf_segmentation_seconds": segmentation_done - geometry_done,
                 "mapping_seconds": mapping_done - segmentation_done,
                 "empty_detection_seconds": empty_done - mapping_done,
-                "total_seconds": empty_done - started,
+                "total_seconds": visualization_done - started,
                 "shelf_inference_ms": (segmentation_done - geometry_done) * 1000,
                 "empty_shelf_total_inference_ms": (
                     empty_inference_done - empty_inference_started
                 ) * 1000,
+                "empty_batch_inference_ms": (
+                    (empty_inference_done - empty_inference_started) * 1000
+                    if not full_frame_mode and regions else 0.0
+                ),
                 "empty_full_frame_inference_ms": (
                     (empty_inference_done - empty_inference_started) * 1000
                     if full_frame_mode else 0.0
                 ),
-                "association_ms": (association_done - association_started) * 1000,
-                "total_pipeline_ms": (empty_done - started) * 1000,
+                "parent_association_ms": (mapping_done - segmentation_done) * 1000,
+                "empty_association_ms": (association_done - association_started) * 1000,
+                "association_ms": (
+                    (mapping_done - segmentation_done)
+                    + (association_done - association_started)
+                ) * 1000,
+                "visualization_render_ms": (
+                    visualization_done - visualization_started
+                ) * 1000,
+                "total_pipeline_ms": (visualization_done - started) * 1000,
             },
             "counts": {
                 "visible_candidates": len(candidates),
                 "segmented_shelves": len(shelves),
                 "detected_shelves": len(shelves),
                 "matched_shelves": sum(shelf["shelf_id"] != UNKNOWN_SHELF for shelf in shelves),
+                "matched_parent_regions": len({
+                    shelf["parent_shelf_id"] for shelf in shelves
+                    if shelf.get("parent_shelf_id") != UNKNOWN_SHELF
+                }),
                 "unknown_shelves": sum(shelf["shelf_id"] == UNKNOWN_SHELF for shelf in shelves),
-                "empty_inference_calls": 1 if full_frame_mode else len(regions),
+                "empty_inference_calls": 1 if full_frame_mode or regions else 0,
                 "empty_model_predict_calls": (
                     1 if full_frame_mode or regions else 0
                 ),
@@ -497,7 +596,7 @@ class ShelfInferencePipeline:
                 "roi_inferences": len(regions),
                 "shelf_rois_selected": len(selected_indices),
                 "shelf_rois_limited": (
-                    0 if full_frame_mode
+                    0 if full_frame_mode or shelf_level_mode
                     else max(0, len(eligible_shelves) - len(selected_indices))
                 ),
                 "raw_empty_predictions": len(raw),
@@ -510,6 +609,7 @@ class ShelfInferencePipeline:
         }
 
         if recorder:
+            recorder.visualization(image, native_shelf_plot, annotated_image)
             diagnostics = _predict(
                 self.empty_model, [region["image"] for region in regions],
                 0.01, self.config.empty_imgsz, self.config.device,
@@ -590,4 +690,4 @@ class ShelfInferencePipeline:
                               "final_detections": final})
             recorder.production_final(image, shelves, raw, accepted, rejected, final, result)
 
-        return PipelineOutcome(result, _render(image, shelves, final))
+        return PipelineOutcome(result, annotated_image, native_shelf_plot)

@@ -17,10 +17,11 @@ def add_pipeline_arguments(parser, root: Path):
     parser.add_argument(
         "--empty-inference-mode",
         choices=tuple(mode.value for mode in EmptyInferenceMode),
-        default=EmptyInferenceMode.FULL_FRAME_GATED.value,
-        help="Empty-model input strategy (default: full_frame_gated)",
+        default=EmptyInferenceMode.SHELF_LEVEL_ROI.value,
+        help="Empty-model input strategy (default: shelf_level_roi)",
     )
     parser.add_argument("--roi-padding-ratio", type=float, default=0.02)
+    parser.add_argument("--shelf-level-roi-padding", type=float, default=0.02)
     parser.add_argument("--empty-roi-mode", choices=("full_shelf", "tiles"), default="full_shelf")
     parser.add_argument("--min-mask-overlap", type=float, default=0.30)
     parser.add_argument("--dedup-iou", type=float, default=0.50)
@@ -40,6 +41,7 @@ def pipeline_config_from_args(args):
         empty_imgsz=args.empty_imgsz,
         empty_inference_mode=args.empty_inference_mode,
         roi_padding_ratio=args.roi_padding_ratio,
+        shelf_level_roi_padding=args.shelf_level_roi_padding,
         empty_roi_mode=args.empty_roi_mode,
         min_mask_overlap=args.min_mask_overlap,
         dedup_iou=args.dedup_iou,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -219,46 +218,82 @@ def score_pair(shelf, candidate, shape, config):
     return score, parts
 
 
-def _global_assignment(scores):
-    """Exact maximum-weight one-to-one assignment with optional unmatched rows."""
-    rows, cols = scores.shape
-    if cols > 20:
-        raise ValueError("Global assignment en fazla 20 görünür harita adayını destekler.")
-    @lru_cache(None)
-    def solve(row, used):
-        if row == rows:
-            return 0.0, ()
-        best_score, best = solve(row+1, used)
-        best = (-1,) + best
-        for col in range(cols):
-            if used & (1 << col):
-                continue
-            tail_score, tail = solve(row+1, used | (1 << col))
-            value = float(scores[row, col]) + tail_score
-            if value > best_score:
-                best_score, best = value, (col,) + tail
-        return best_score, best
-    return solve(0, 0)[1]
+def assign_parent_regions(shelves, candidates, shape, config=PoseConfig()):
+    """Map every detected shelf to its best parent region independently.
+
+    A parent is a physical map surface, so several segmented shelf levels may
+    legitimately select the same candidate.  Each detection still selects at
+    most one parent and must pass the configured geometric score.
+    """
+    for shelf in shelves:
+        scored = []
+        for candidate_index, candidate in enumerate(candidates):
+            score, parts = score_pair(shelf, candidate, shape, config)
+            scored.append((float(score), str(candidate["shelf_id"]), candidate_index,
+                           candidate, parts))
+        # Stable tie-break: highest geometry score, then parent ID, then input index.
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        best = scored[0] if scored else None
+        if best is None or best[0] < config.min_score:
+            shelf.update(
+                shelf_id=UNKNOWN_SHELF,
+                parent_shelf_id=UNKNOWN_SHELF,
+                mapping_confidence=0.0,
+                mapping_scores=best[4] if best is not None else {},
+                projected_candidate=None,
+            )
+            continue
+        score, parent_id, _, candidate, parts = best
+        shelf.update(
+            shelf_id=parent_id,
+            parent_shelf_id=parent_id,
+            mapping_confidence=score,
+            mapping_scores=parts,
+            projected_candidate=candidate,
+        )
+    return shelves
+
+
+def assign_shelf_level_ids(shelves):
+    """Assign deterministic top-to-bottom semantic IDs within each parent."""
+    groups = {}
+    for source_order, shelf in enumerate(shelves):
+        parent_id = shelf.get("parent_shelf_id", shelf.get("shelf_id", UNKNOWN_SHELF))
+        if not parent_id or parent_id == UNKNOWN_SHELF:
+            shelf.update(
+                shelf_id=UNKNOWN_SHELF,
+                parent_shelf_id=UNKNOWN_SHELF,
+                shelf_level_id=None,
+                level_number=None,
+            )
+            continue
+        shelf["parent_shelf_id"] = parent_id
+        groups.setdefault(parent_id, []).append((source_order, shelf))
+
+    for parent_id, group in groups.items():
+        def vertical_key(item):
+            source_order, shelf = item
+            centroid = shelf.get("centroid") or [0.0, 0.0]
+            return (
+                float(centroid[1]),
+                float(centroid[0]),
+                -float(shelf.get("segmentation_confidence", 0.0)),
+                int(shelf.get("shelf_index", source_order)),
+                source_order,
+            )
+
+        for level_number, (_, shelf) in enumerate(sorted(group, key=vertical_key), 1):
+            level_id = f"{parent_id}-{level_number:02d}"
+            shelf.update(
+                shelf_id=level_id,
+                shelf_level_id=level_id,
+                level_number=level_number,
+            )
+    return shelves
 
 
 def assign_pose_ids(shelves, candidates, shape, config=PoseConfig()):
-    if not shelves:
-        return shelves
-    scores = np.zeros((len(shelves), len(candidates)), float)
-    parts = {}
-    for si, shelf in enumerate(shelves):
-        for ci, candidate in enumerate(candidates):
-            scores[si, ci], parts[si, ci] = score_pair(shelf, candidate, shape, config)
-    assignment = _global_assignment(np.where(scores >= config.min_score, scores, 0.0))
-    for si, ci in enumerate(assignment):
-        if ci < 0 or scores[si, ci] < config.min_score:
-            best_ci = int(np.argmax(scores[si])) if len(candidates) else None
-            shelves[si].update(shelf_id=UNKNOWN_SHELF, mapping_confidence=0.0,
-                               mapping_scores=parts[si, best_ci] if best_ci is not None else {},
-                               projected_candidate=None)
-        else:
-            shelves[si].update(shelf_id=candidates[ci]["shelf_id"],
-                               mapping_confidence=float(scores[si, ci]),
-                               mapping_scores=parts[si, ci],
-                               projected_candidate=candidates[ci])
-    return shelves
+    """Backward-compatible entry point for parent mapping plus level numbering."""
+    return assign_shelf_level_ids(
+        assign_parent_regions(shelves, candidates, shape, config)
+    )

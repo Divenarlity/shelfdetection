@@ -32,14 +32,16 @@ def test_behind_camera_and_backface_are_rejected():
     assert generate_candidates({"shelves":[far_right]},metadata()) == []
 
 
-def test_assignment_is_one_to_one_and_unknown_on_low_score():
+def test_assignment_maps_valid_shelf_and_keeps_low_score_unknown():
     m=np.zeros((100,100),bool); m[25:75,25:75]=1
     shelves=[{"mask":m.copy(),"segmentation_confidence":.9},
              {"mask":np.zeros_like(m),"segmentation_confidence":.9}]
     candidates=generate_candidates({"shelves":[shelf()]},metadata(),PoseConfig(min_visible_area=1))
     result=assign_pose_ids(shelves,candidates,m.shape,PoseConfig(min_score=.2))
-    assert result[0]["shelf_id"]=="A-L-01"
+    assert result[0]["parent_shelf_id"]=="A-L-01"
+    assert result[0]["shelf_id"]==result[0]["shelf_level_id"]=="A-L-01-01"
     assert result[1]["shelf_id"]=="UNKNOWN_SHELF"
+    assert result[1]["shelf_level_id"] is None and result[1]["level_number"] is None
 
 
 def test_same_pixels_different_pose_selects_different_static_id():
@@ -48,8 +50,8 @@ def test_same_pixels_different_pose_selects_different_static_id():
     cfg=PoseConfig(min_visible_area=1,min_score=.01)
     a=generate_candidates({"shelves":[shelf("A-L-01")]},metadata(),cfg)
     b=generate_candidates({"shelves":[shelf("B-R-02")]},metadata(),cfg)
-    assert assign_pose_ids([s1.copy()],a,m.shape,cfg)[0]["shelf_id"]=="A-L-01"
-    assert assign_pose_ids([s1.copy()],b,m.shape,cfg)[0]["shelf_id"]=="B-R-02"
+    assert assign_pose_ids([s1.copy()],a,m.shape,cfg)[0]["parent_shelf_id"]=="A-L-01"
+    assert assign_pose_ids([s1.copy()],b,m.shape,cfg)[0]["parent_shelf_id"]=="B-R-02"
 
 
 def test_two_regions_same_parent_are_distinct_and_order_independent():
@@ -66,18 +68,42 @@ def test_two_regions_same_parent_are_distinct_and_order_independent():
     cfg=PoseConfig(min_score=.25)
     a=assign_pose_ids([dict(x) for x in shelves],candidates,(100,100),cfg)
     b=assign_pose_ids([dict(x) for x in reversed(shelves)],candidates,(100,100),cfg)
-    assert [x["shelf_id"] for x in a]==["KNOWN-LEFT","KNOWN-RIGHT"]
-    assert [x["shelf_id"] for x in b]==["KNOWN-RIGHT","KNOWN-LEFT"]
-    assert len({x["shelf_id"] for x in a})==2
+    assert [x["parent_shelf_id"] for x in a]==["KNOWN-LEFT","KNOWN-RIGHT"]
+    assert [x["parent_shelf_id"] for x in b]==["KNOWN-RIGHT","KNOWN-LEFT"]
+    assert [x["shelf_id"] for x in a]==["KNOWN-LEFT-01","KNOWN-RIGHT-01"]
 
 
-def test_two_masks_one_known_region_leaves_one_unknown():
+def test_multiple_masks_can_share_one_parent_and_number_deterministically():
     mask=np.ones((50,50),bool)
-    shelves=[{"mask":mask,"centroid":[25,25],"segmentation_confidence":1} for _ in range(2)]
+    shelves=[{"mask":mask,"centroid":[25,35],"segmentation_confidence":.9,"shelf_index":0},
+             {"mask":mask,"centroid":[25,15],"segmentation_confidence":.8,"shelf_index":1}]
     candidate={"shelf_id":"ONLY","polygon":np.array([[0,0],[0,49],[49,49],[49,0]]),
                "distance":1,"front_alignment":1,"visible_area":2401}
-    ids=[x["shelf_id"] for x in assign_pose_ids(shelves,[candidate],mask.shape,PoseConfig(min_score=.1))]
-    assert ids.count("ONLY")==1 and ids.count("UNKNOWN_SHELF")==1
+    result=assign_pose_ids(shelves,[candidate],mask.shape,PoseConfig(min_score=.1))
+    assert [x["parent_shelf_id"] for x in result]==["ONLY","ONLY"]
+    assert [x["shelf_id"] for x in result]==["ONLY-02","ONLY-01"]
+    repeat=assign_pose_ids([dict(x, shelf_id="ONLY", parent_shelf_id="ONLY") for x in shelves],
+                           [candidate],mask.shape,PoseConfig(min_score=.1))
+    assert [x["shelf_id"] for x in repeat]==["ONLY-02","ONLY-01"]
+
+
+def test_parent_groups_number_independently_top_to_bottom():
+    top=np.zeros((100,100),bool); top[10:20,5:45]=1
+    bottom=np.zeros((100,100),bool); bottom[70:80,5:45]=1
+    right=np.zeros((100,100),bool); right[40:50,55:95]=1
+    shelves=[
+        {"mask":bottom,"centroid":[25,75],"segmentation_confidence":.8,"shelf_index":0},
+        {"mask":right,"centroid":[75,45],"segmentation_confidence":.9,"shelf_index":1},
+        {"mask":top,"centroid":[25,15],"segmentation_confidence":.7,"shelf_index":2},
+    ]
+    candidates=[
+        {"shelf_id":"LEFT","polygon":np.array([[0,0],[0,99],[49,99],[49,0]]),
+         "distance":1,"front_alignment":1,"visible_area":4900},
+        {"shelf_id":"RIGHT","polygon":np.array([[50,0],[50,99],[99,99],[99,0]]),
+         "distance":1,"front_alignment":1,"visible_area":4900},
+    ]
+    result=assign_pose_ids(shelves,candidates,(100,100),PoseConfig(min_score=.1))
+    assert [item["shelf_id"] for item in result]==["LEFT-02","RIGHT-01","LEFT-01"]
 
 
 def test_only_schema_v3_is_accepted_and_nested_identity_is_rejected(tmp_path):
