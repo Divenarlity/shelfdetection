@@ -91,7 +91,7 @@ def mask_box_metrics(mask, box):
 
 
 def mask_box_relation(mask, box, min_overlap: float):
-    """Legacy ROI validation: center inclusion remains a secondary acceptance path."""
+    """Validate an ROI detection by center inclusion or configured mask overlap."""
     overlap, center_inside = mask_box_metrics(mask, box)
     return center_inside or overlap >= min_overlap, overlap, center_inside
 

@@ -21,7 +21,10 @@ def resolve(path: Path):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Run task-aware shelf proposals, full-frame gated empty detection, and pose/map identity."
+        description=(
+            "Run the production shelf-level ROI cascade with pose/map identity "
+            "(comparison modes remain available explicitly)."
+        )
     )
     parser.add_argument("--source", type=Path, required=True, help="Saved Unity RGB frame")
     parser.add_argument("--frame-metadata", type=Path, required=True, help="ID-free Unity metadata JSON")

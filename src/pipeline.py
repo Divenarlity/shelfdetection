@@ -223,8 +223,8 @@ def _full_frame_prediction_records(
 ):
     """Associate global empty boxes to exactly one shelf using mask containment.
 
-    Center inclusion is retained as evidence and a tie-breaker, but unlike the
-    legacy ROI path it cannot override the configured overlap threshold.
+    Center inclusion is retained as evidence and a tie-breaker, but it cannot
+    override the configured overlap threshold in full-frame mode.
     """
     raw, accepted, rejected = [], [], []
     if result.boxes is None:
@@ -346,11 +346,10 @@ class ShelfInferencePipeline:
             recorder.candidates(image, candidates)
         geometry_done = time.perf_counter()
 
-        shelf_kwargs = {"source": image, "conf": self.config.shelf_conf,
-                        "imgsz": self.config.shelf_imgsz, "verbose": False}
-        if self.config.device:
-            shelf_kwargs["device"] = self.config.device
-        shelf_result = self.shelf_model.predict(**shelf_kwargs)[0]
+        shelf_result = _predict(
+            self.shelf_model, [image], self.config.shelf_conf,
+            self.config.shelf_imgsz, self.config.device,
+        )[0]
         shelves = extract_shelves(
             shelf_result, image.shape, self.shelf_names, self.shelf_task
         )
@@ -458,20 +457,20 @@ class ShelfInferencePipeline:
                 })
         association_done = time.perf_counter()
         final, duplicates_removed = deduplicate(accepted, self.config.dedup_iou)
+        shelves_by_index = {shelf["shelf_index"]: shelf for shelf in shelves}
+        detections_by_shelf_index = {
+            shelf_index: [] for shelf_index in shelves_by_index
+        }
         for detection in final:
-            shelf = next(
-                item for item in shelves
-                if item["shelf_index"] == detection["assigned_shelf_index"]
-            )
+            shelf_index = detection["assigned_shelf_index"]
+            shelf = shelves_by_index[shelf_index]
             detection["section"] = section_for_box(detection["global_bbox_xyxy"], shelf["bbox"])
+            detections_by_shelf_index[shelf_index].append(detection)
         empty_done = time.perf_counter()
 
         output_shelves = []
         for shelf in shelves:
-            detections = [
-                item for item in final
-                if item["assigned_shelf_index"] == shelf["shelf_index"]
-            ]
+            detections = detections_by_shelf_index[shelf["shelf_index"]]
             sections = {name: sum(item["section"] == name for item in detections)
                         for name in ("SOL", "ORTA", "SAĞ")}
             status = (

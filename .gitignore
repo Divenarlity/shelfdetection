@@ -34,6 +34,7 @@ runs/
 .pytest_cache/
 .coverage
 htmlcov/
+evaluation_metrics.json
 
 # Optional local datasets (the small tests/data regression fixture is tracked)
 datasets/

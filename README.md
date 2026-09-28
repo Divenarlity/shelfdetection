@@ -1,64 +1,74 @@
 # Shelf detection
 
-This repository contains the Python side of the live Unity shelf-empty-space system. The production path is deliberately singular:
+This repository is the Python half of the live Unity shelf-monitoring system. The production pipeline is:
 
-`Unity RGB frame + camera pose → shelf model and empty model on the same full frame → shelf-mask association → optional one-to-one known-ID mapping → global NMS → API response`
+`Unity frame + camera metadata → shelf segmentation → pose/map parent matching → shelf-level ROIs → one empty-model batch → level-mask validation → global deduplication → SOL / ORTA / SAĞ → JSON + annotated JPEG`
 
-The persistent server loads both models and the Unity-exported store map once. The default `full_frame_gated` mode runs each model once, then assigns each empty box to the eligible pose/map-matched shelf mask with the greatest containment ratio. Proposals that cannot be mapped retain `UNKNOWN_SHELF` and remain visible as unlocalized shelf proposals, but do not produce production empty-gap detections.
+The server loads both models and the Unity-exported store map once. It serializes inference requests with one lock so GPU work never overlaps.
 
 ## Model contracts
 
-- `best.pt`: currently an Ultralytics `segment` model containing class `shelves`; the pipeline explicitly supports `segment` and `detect` shelf weights
-- `empty_shelf_yolo11m_best.pt`: Ultralytics `detect` model containing class `empty_shelf`
+- `best.pt`: Ultralytics `segment`, class `shelves`, confidence `0.25`, image size `960`
+- `empty_shelf_yolo11m_best.pt`: Ultralytics `detect`, class `empty_shelf`, confidence `0.10`, image size `640`
 
-Startup fails if either contract is wrong. Weight files remain local and are ignored by Git.
+Startup fails when either model violates its contract. Weight files remain local and are ignored by Git.
 
-## Live Unity workflow
+## Production inference
 
-Create a virtual environment, install `requirements.txt`, then start the server from this repository:
+`shelf_level_roi` is the default and production mode. Shelf masks are associated with known parent regions from the camera pose and `store_map.json`. Levels belonging to the same parent are numbered deterministically from top to bottom, for example `A-L-02-01`, `A-L-02-02`, and so on.
 
-```powershell
-python inference_server.py --store-map "<path-to-shelfsimulation>\ShelfSystemData\store_map.json"
-```
+Every eligible known level contributes one padded mask-bounding-box ROI. All ROIs are passed to the empty model in one batch. Local detections are translated to global image coordinates, validated against the exact originating level mask, deduplicated globally, and classified as `SOL`, `ORTA`, or `SAĞ` relative to that level.
 
-Then open `Market_01` in Unity and enter Play Mode. The scene's `ShelfInferenceClient` posts to `http://127.0.0.1:8000`, displays current status, and only emits a state-change notification when a shelf result changes.
+`UNKNOWN_SHELF` proposals remain `UNLOCALIZED`. They receive no invented level ID and are excluded from production empty inference.
 
-The default empty inference mode is `full_frame_gated`, with shelf confidence `0.25`, empty confidence `0.10`, mask containment `0.30`, and global dedup IoU `0.50`. The former crop path remains available only through `--empty-inference-mode shelf_roi`; its 2% padding, 12-ROI cap, and optional fixed tiles apply only in that explicit comparison/debug mode.
+Two explicit non-production modes remain for diagnosis and comparison:
 
-### Unity responsibilities
+- `full_frame_gated`: one full-frame empty-model input followed by shelf-mask association
+- `shelf_roi`: the earlier shelf-ROI path, including optional fixed-size tiles and the ROI cap
 
-- `KnownShelfRegion`: serialized static shelf ID and BL/TL/TR/BR world geometry
-- `ShelfLocationBridge`: camera capture, ID-free pose metadata, map export, and offline frame capture
-- `ShelfInferenceClient`: serialized non-overlapping HTTP loop and result dispatch
-- `ShelfInferenceHud`: 1920×1080 reference-scaled top-right status card
-- `DetectionOverlayManager`: pooled cyan shelf boxes and red empty-space boxes using one resolution/aspect mapping path
-- `ShelfInferenceResponse`: response parsing and state-change suppression
-- `UnitySequenceRecorder`: optional offline dataset/evaluation sequence capture
+Their mode-specific CLI settings remain supported because the comparison tool and regression tests exercise them. They do not complicate the default `shelf_level_roi` route.
 
-`ShelfSystemData/store_map.json`, exported from the scene, is the authoritative known-shelf geometry for the live workflow. Ground truth is written only beside offline captures and is rejected if supplied as inference metadata.
+## Start the server
 
-## HTTP contract
-
-- `GET /health` reports model readiness.
-- `POST /infer` accepts multipart fields `image` and `metadata`.
-
-The response includes `empty_inference_mode`, `frame_id`, `image`, `model_tasks`, `strategy`, timing, counts, shelves, and rejected detections. Each shelf carries `empty_inference_source`; full-frame detections preserve their original global coordinates and receive exactly one `assigned_shelf_index` only after mask gating. `roi_inferences` and ROI-selection counts are zero in the default mode, while `empty_model_predict_calls` and `empty_inference_inputs` are one.
-
-The server serializes requests with one inference lock for GPU safety. A concurrent request receives HTTP 503. Invalid images, dimensions, pose metadata, or forbidden identity/ground-truth fields receive HTTP 422.
-
-## Debug mode
-
-Add `--debug-live` to save diagnostic evidence under `runs/live_debug/`:
+Create a virtual environment, install `requirements.txt`, and run:
 
 ```powershell
-python inference_server.py --store-map "<path-to-shelfsimulation>\ShelfSystemData\store_map.json" --debug-live
+python inference_server.py `
+  --host 127.0.0.1 `
+  --port 8000 `
+  --shelf-model best.pt `
+  --empty-model empty_shelf_yolo11m_best.pt `
+  --store-map "<Unity project>\ShelfSystemData\store_map.json"
 ```
 
-Debug mode performs additional confidence-0.01, full-frame, full-shelf, and tile control passes. Without this flag there are no control model passes, debug images, debug JSON, or debug filesystem writes.
+Quote the complete `--store-map` path when it contains spaces. `GET /health` reports readiness. `POST /infer` accepts multipart `image` and `metadata`; invalid uploads or metadata return 422, concurrent/not-ready requests return 503, and unexpected inference failures return a generic 500 while details stay in server logs.
 
-## Offline inference
+The API enforces a 12 MiB upload limit, schema-v3 pose metadata, matching image dimensions, and rejection of ground-truth identity fields.
 
-The offline CLI calls the exact same `ShelfInferencePipeline` as the API:
+## Visualization
+
+`PythonAnnotatedFrame` is the Unity production display mode. Python reuses the shelf result already computed for inference and calls native Ultralytics `result.plot()` once; it does not run the shelf model again. Only final accepted empty detections are added as red boxes. The JPEG is kept in a bounded in-memory cache and returned through `visualization_url`.
+
+Unity downloads that URL and displays the JPEG in an aspect-preserving `RawImage` under a scene-root `ScreenSpaceOverlay` canvas. The semantic HUD remains separate. The tested `UnityGeometryOverlay` polygon/bbox renderer is retained only as an explicit debug/fallback display mode.
+
+## Unity workflow and patrol
+
+Open `Market_01` in the paired Unity project and enter Play Mode with the server ready. The final patrol is Enter-gated:
+
+1. The current camera pose settles and is scanned once without movement.
+2. The result and annotated image remain visible in `WaitingForInput`.
+3. Enter or Numpad Enter advances exactly once through any transit points to the next scan point.
+4. `RobotRig` moves horizontally at fixed height; the mounted camera local pose remains fixed.
+5. At the scan point the rig aligns only around Y, settles, stays stationary during inference, displays the result, and returns to `WaitingForInput`.
+6. The route traverses scan points in PingPong order. Enter presses while moving, settling, or inferring are ignored rather than queued.
+
+The route setup computes observation distance from shelf size and camera FOV so the complete shelf remains framed. `ShelfLocationBridge` owns capture/metadata/map export, `ShelfInferenceClient` owns HTTP lifecycle, `ShelfInferenceHud` owns presentation, and `ShelfCameraPatrolController` owns movement/input/scan sequencing.
+
+## Debug and offline tools
+
+Production requests do not write files. Add `--debug-live` to save explicit per-request diagnostic evidence under `runs/live_debug/`; this also enables additional low-confidence/full-frame/full-shelf/tile control passes.
+
+Run the same pipeline on a saved Unity frame:
 
 ```powershell
 python run_shelf_gap_cascade.py `
@@ -67,15 +77,7 @@ python run_shelf_gap_cascade.py `
   --store-map ShelfSystemData\store_map.json
 ```
 
-It writes `result.json` and `annotated.jpg` under `runs/offline/`. Use `--debug-live` only when control evidence is needed. `evaluate_unity.py` compares offline `result.json` files with a separate ground-truth directory; evaluation data is never an inference input.
-
-For a raw-image A/B/C comparison without pose metadata:
-
-```powershell
-python compare_empty_inference_modes.py --source "<image.jpg>"
-```
-
-This writes source, shelf masks, standalone full-frame detections, legacy shelf-ROI detections, gated detections, and `comparison.json` under `runs/full_frame_gated_validation_*`.
+Use `compare_empty_inference_modes.py --source <image.jpg>` for a raw-image A/B comparison of the retained diagnostic strategies. `evaluate_unity.py` compares offline results with separately stored ground truth; ground truth is never an inference input. Generated `runs/`, caches, local environments, weights, and evaluation output are ignored by Git.
 
 ## Validation
 
@@ -84,14 +86,10 @@ python -m compileall inference_server.py run_shelf_gap_cascade.py compare_empty_
 python -m pytest -q
 python inference_server.py --help
 python run_shelf_gap_cascade.py --help
+python compare_empty_inference_modes.py --help
+python evaluate_unity.py --help
 ```
 
-The real-model regression test uses the small saved A-L-02 frame in `tests/data/a_l_02_regression`. It is skipped only when the local `.pt` files are absent.
+The real-model regression test uses the checked-in A-L-02 frame and is skipped only if the local weights are absent. Unity provides scene validation, inference-contract checks, and patrol checks under `Tools/Shelf Location`; these cover camera-state restoration, response parsing, UI ownership, texture replacement, initial scan, fresh/busy Enter behavior, fixed pose, framing, inference waiting, retries, and PingPong boundaries.
 
-## Troubleshooting
-
-- Startup contract error: confirm each model task and required class above.
-- Unity waits for the server: check `GET http://127.0.0.1:8000/health` and the client URL.
-- No known shelf match: validate/export the Unity scene map and check pose quality, relocalization, scale initialization, camera intrinsics, and scene geometry.
-- Shelf matches but no empty space: reproduce with the offline CLI; enable `--debug-live` only for diagnosis.
-- HTTP 503: a previous inference is still running; Unity intentionally does not overlap requests.
+Performance is dominated by the two model stages. Production performs one shelf-model call and, when known levels exist, one batched empty-model call. Debug mode intentionally performs extra control inference and should not be used for normal operation.
