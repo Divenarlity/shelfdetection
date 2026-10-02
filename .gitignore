@@ -28,6 +28,8 @@ Thumbs.db
 
 # Model weights
 *.pt
+*.onnx
+*.engine
 
 # Python cache / outputs
 runs/

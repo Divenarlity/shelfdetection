@@ -29,7 +29,13 @@ def add_pipeline_arguments(parser, root: Path):
                         help="Maximum detected shelves sent to second-stage inference (default: 12)")
     parser.add_argument("--tile-size", type=int, default=384)
     parser.add_argument("--tile-overlap", type=float, default=0.25)
-    parser.add_argument("--device")
+    parser.add_argument(
+        "--device", default="cpu",
+        help="Inference device: cpu, auto, CUDA index (0), or cuda:<index>",
+    )
+    parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
+    parser.add_argument("--half", action="store_true",
+                        help="Alias for --precision fp16")
     return parser
 
 
@@ -49,4 +55,5 @@ def pipeline_config_from_args(args):
         tile_size=args.tile_size,
         tile_overlap=args.tile_overlap,
         device=args.device,
+        precision="fp16" if getattr(args, "half", False) else args.precision,
     )

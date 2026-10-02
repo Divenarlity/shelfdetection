@@ -37,18 +37,22 @@ class ShelfModel:
     def __init__(self): self.calls, self.plot_calls = [], 0
     def predict(self, **kwargs):
         self.calls.append(kwargs)
-        masks = np.zeros((2, 80, 120), np.float32)
-        masks[0, 20:60, 40:80] = 1
-        masks[1, 0:10, 0:10] = 1
-        result = SimpleNamespace(masks=SimpleNamespace(data=Tensor(masks)),
-                                 boxes=Boxes([.9, .8], [0, 0]))
-        def plot(img=None, **_):
-            self.plot_calls += 1
-            canvas = img.copy()
-            canvas[20:60, 40:80] = (255, 0, 0)
-            return canvas
-        result.plot = plot
-        return [result]
+        count = len(kwargs["source"]) if isinstance(kwargs["source"], list) else 1
+        results = []
+        for _ in range(count):
+            masks = np.zeros((2, 80, 120), np.float32)
+            masks[0, 20:60, 40:80] = 1
+            masks[1, 0:10, 0:10] = 1
+            result = SimpleNamespace(masks=SimpleNamespace(data=Tensor(masks)),
+                                     boxes=Boxes([.9, .8], [0, 0]))
+            def plot(img=None, **_):
+                self.plot_calls += 1
+                canvas = img.copy()
+                canvas[20:60, 40:80] = (255, 0, 0)
+                return canvas
+            result.plot = plot
+            results.append(result)
+        return results
 
 
 class EmptyModel:
@@ -393,3 +397,158 @@ def test_debug_controls_are_strictly_opt_in(tmp_path):
     assert (tmp_path / "production_final.jpg").is_file()
     assert (tmp_path / "A-L-01-01_input.jpg").is_file()
     assert (tmp_path / "A-L-01-01_empty_result.jpg").is_file()
+
+
+def test_dual_pipeline_batches_models_once_and_matches_single_view_semantics():
+    image = np.zeros((80, 120, 3), np.uint8)
+    left_metadata = metadata()
+    right_metadata = {**metadata(), "frame_id": "frame_000001_right"}
+
+    single_pipeline = ShelfInferencePipeline(
+        ShelfModel(), EmptyModel(), store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    )
+    expected_left = single_pipeline.infer(image, left_metadata).result
+    expected_right = single_pipeline.infer(image, right_metadata).result
+
+    shelf_model, empty_model = ShelfModel(), EmptyModel()
+    dual = ShelfInferencePipeline(
+        shelf_model, empty_model, store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    ).infer_dual(image, left_metadata, image.copy(), right_metadata)
+
+    assert len(shelf_model.calls) == 1
+    assert isinstance(shelf_model.calls[0]["source"], list)
+    assert len(shelf_model.calls[0]["source"]) == 2
+    assert len(empty_model.calls) == 1
+    assert isinstance(empty_model.calls[0]["source"], list)
+    assert len(empty_model.calls[0]["source"]) == 2
+    assert dual.counts == {
+        "shelf_model_predict_calls": 1, "shelf_model_inputs": 2,
+        "empty_model_predict_calls": 1, "left_empty_inputs": 1,
+        "right_empty_inputs": 1, "total_empty_inputs": 2,
+        "left_final_empty_spaces": 0, "right_final_empty_spaces": 0,
+    }
+    for actual, expected in ((dual.left.result, expected_left),
+                             (dual.right.result, expected_right)):
+        assert actual["shelves"] == expected["shelves"]
+        assert actual["rejected_detections"] == expected["rejected_detections"]
+        assert actual["counts"] == expected["counts"]
+
+
+def test_dual_pipeline_keeps_zero_roi_views_valid_and_dedup_separate():
+    class MixedShelfModel(ShelfModel):
+        def predict(self, **kwargs):
+            self.calls.append(kwargs)
+            results = []
+            for image in kwargs["source"]:
+                if image[0, 0, 0] == 0:
+                    result = SimpleNamespace(masks=None, boxes=Boxes([], []))
+                else:
+                    masks = np.zeros((1, 80, 120), np.float32)
+                    masks[0, 20:60, 40:80] = 1
+                    result = SimpleNamespace(
+                        masks=SimpleNamespace(data=Tensor(masks)),
+                        boxes=Boxes([.9], [0]),
+                    )
+                result.plot = lambda img=None, **_: img.copy()
+                results.append(result)
+            return results
+
+    left, right = np.zeros((80, 120, 3), np.uint8), np.ones((80, 120, 3), np.uint8)
+    shelf_model, empty_model = MixedShelfModel(), EmptyModel([[1, 1, 5, 5]])
+    dual = ShelfInferencePipeline(
+        shelf_model, empty_model, store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    ).infer_dual(left, metadata(), right, {**metadata(), "frame_id": "right"})
+    assert dual.left.result["shelves"] == []
+    assert dual.counts["left_empty_inputs"] == 0
+    assert dual.counts["right_empty_inputs"] == dual.counts["total_empty_inputs"] == 1
+    assert dual.counts["empty_model_predict_calls"] == 1
+    assert dual.right.result["counts"]["final_empty_spaces"] == 1
+
+    both_empty_model = EmptyModel()
+    both_zero = ShelfInferencePipeline(
+        MixedShelfModel(), both_empty_model, store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    ).infer_dual(left, metadata(), left.copy(), {**metadata(), "frame_id": "right"})
+    assert both_zero.counts["empty_model_predict_calls"] == 0
+    assert both_zero.counts["total_empty_inputs"] == 0
+    assert both_empty_model.calls == []
+
+
+def test_dual_pipeline_validates_batched_result_counts():
+    class ShortShelfModel(ShelfModel):
+        def predict(self, **kwargs):
+            return super().predict(**{**kwargs, "source": kwargs["source"][0]})
+
+    pipeline = ShelfInferencePipeline(
+        ShortShelfModel(), EmptyModel(), store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    )
+    with pytest.raises(RuntimeError, match="Shelf-model result count"):
+        pipeline.infer_dual(
+            np.zeros((80, 120, 3), np.uint8), metadata(),
+            np.zeros((80, 120, 3), np.uint8), {**metadata(), "frame_id": "right"},
+        )
+
+    class ShortEmptyModel(EmptyModel):
+        def predict(self, **kwargs):
+            self.calls.append(kwargs)
+            return [SimpleNamespace(boxes=None)]
+
+    pipeline = ShelfInferencePipeline(
+        ShelfModel(), ShortEmptyModel(), store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    )
+    with pytest.raises(RuntimeError, match="Empty-model result count"):
+        pipeline.infer_dual(
+            np.zeros((80, 120, 3), np.uint8), metadata(),
+            np.zeros((80, 120, 3), np.uint8), {**metadata(), "frame_id": "right"},
+        )
+
+
+def test_dual_deduplication_is_isolated_per_camera():
+    image = np.zeros((80, 120, 3), np.uint8)
+    dual = ShelfInferencePipeline(
+        ShelfModel(), EmptyModel([[5, 5, 10, 10]]), store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    ).infer_dual(image, metadata(), image.copy(), {**metadata(), "frame_id": "right"})
+    assert dual.left.result["counts"]["final_empty_spaces"] == 1
+    assert dual.right.result["counts"]["final_empty_spaces"] == 1
+    assert dual.counts["left_final_empty_spaces"] == 1
+    assert dual.counts["right_final_empty_spaces"] == 1
+
+
+def test_fp16_uses_ultralytics_quantize_without_changing_dual_batch_calls():
+    image = np.zeros((80, 120, 3), np.uint8)
+    shelf_model, empty_model = ShelfModel(), EmptyModel()
+    dual = ShelfInferencePipeline(
+        shelf_model, empty_model, store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25),
+        PipelineConfig(device="0", precision="fp16"),
+    ).infer_dual(image, metadata(), image.copy(), {**metadata(), "frame_id": "right"})
+    assert len(shelf_model.calls) == len(empty_model.calls) == 1
+    assert len(shelf_model.calls[0]["source"]) == 2
+    assert shelf_model.calls[0]["quantize"] == 16
+    assert empty_model.calls[0]["quantize"] == 16
+    assert dual.counts["shelf_model_predict_calls"] == 1
+    assert dual.counts["empty_model_predict_calls"] == 1
+
+
+def test_fp16_rejects_cpu_and_invalid_precision():
+    with pytest.raises(ValueError, match="requires a CUDA"):
+        PipelineConfig(device="cpu", precision="fp16")
+    with pytest.raises(ValueError, match="fp32 or fp16"):
+        PipelineConfig(device="0", precision="int8")
+
+
+def test_warmup_validates_shape_configuration_without_running_models():
+    pipeline = ShelfInferencePipeline(
+        ShelfModel(), EmptyModel(), store_map(),
+        PoseConfig(min_visible_area=1, min_score=.25), PipelineConfig(),
+    )
+    with pytest.raises(ValueError, match="iterations"):
+        pipeline.warmup(-1, 20)
+    with pytest.raises(ValueError, match="batch size"):
+        pipeline.warmup(0, 0)
